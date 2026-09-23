@@ -51,6 +51,7 @@ class MainActivity : Activity() {
         private const val KEY_SESSION_ID = "session_id"
         private const val KEY_SESSION_STARTED_ELAPSED = "session_started_elapsed"
         private const val KEY_SESSION_STARTED_WALL = "session_started_wall"
+        private const val KEY_CATEGORY = "category"
         private const val KEY_LINE = "line"
         private const val KEY_DIRECTION = "direction"
         private const val KEY_START_STATION = "start_station"
@@ -90,6 +91,7 @@ class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
     private val handler = Handler(Looper.getMainLooper())
 
+    private lateinit var categorySpinner: Spinner
     private lateinit var lineSpinner: Spinner
     private lateinit var directionSpinner: Spinner
     private lateinit var startStationSpinner: Spinner
@@ -138,7 +140,7 @@ class MainActivity : Activity() {
         telephonyManager = getSystemService(TELEPHONY_SERVICE) as TelephonyManager
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         buildUi()
-        updateRouteControls()
+        updateCategoryControls()
         restorePersistentState()
         updateButtons()
         requestPermissionsIfNeeded()
@@ -184,25 +186,35 @@ class MainActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "v0.1.3 · GPS 좌표를 읽지 않는 철도 셀룰러 로거"
+            text = "v0.1.4 · GPS 좌표를 읽지 않는 철도 셀룰러 로거"
             textSize = 14f
             setPadding(0, dp(4), 0, dp(18))
         })
 
+        categorySpinner = addLabeledSpinner(
+            root,
+            "구분",
+            listOf("고속열차", "일반열차", "광역철도", "도시철도")
+        )
         lineSpinner = addLabeledSpinner(
             root,
             "노선",
             listOf(
-                "대경선",
-                "대구 도시철도 2호선",
                 "경부고속선",
                 "경부고속선 (수원경유)",
                 "경부고속선 (서대구경유)",
                 "경부고속선 (구포경유)"
             )
         )
-        directionSpinner = addLabeledSpinner(root, "방향", listOf("경산 방면", "구미 방면"))
-        startStationSpinner = addLabeledSpinner(root, "기록 시작역", DAEGYEONG)
+        directionSpinner = addLabeledSpinner(root, "방향", listOf("서울 방면", "부산 방면"))
+        startStationSpinner = addLabeledSpinner(root, "기록 시작역", GYEONGBU_HSR.asReversed())
+
+        categorySpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (!restoringState) updateCategoryControls()
+            }
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
 
         val routeListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -281,7 +293,7 @@ class MainActivity : Activity() {
         root.addView(eventText)
 
         root.addView(TextView(this).apply {
-            text = "※ 이 앱은 Location/GPS API를 호출하지 않습니다. Android가 셀 식별자 접근에 정밀 위치 권한을 요구하기 때문에 해당 권한만 요청합니다. v0.1.3은 대경선·대구 2호선과 경부고속선 4개 운행 패턴(본선·수원·서대구·구포 경유)을 지원합니다. 일반철도에서는 정차하지 않는 다음 역을 통과 처리할 수 있고 진행 중 세션 자동복구도 유지됩니다."
+            text = "※ 이 앱은 Location/GPS API를 호출하지 않습니다. Android가 셀 식별자 접근에 정밀 위치 권한을 요구하기 때문에 해당 권한만 요청합니다. v0.1.4는 구분 → 노선 → 방향 → 시작역 순으로 선택합니다. 고속열차·광역철도·도시철도를 지원하며 일반열차는 노선 등록 준비 중입니다. 진행 중 세션 자동복구와 통과 마커도 유지됩니다."
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
@@ -331,12 +343,39 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
-    private fun directionsForSelectedLine(): List<String> = when (lineSpinner.selectedItemPosition) {
-        0 -> listOf("경산 방면", "구미 방면")
-        1 -> listOf("영남대 방면", "문양 방면")
-        in 2..5 -> listOf("부산 방면", "서울 방면")
-        else -> listOf("정방향", "역방향")
+    private fun linesForSelectedCategory(): List<String> = when (categorySpinner.selectedItemPosition) {
+        0 -> listOf(
+            "경부고속선",
+            "경부고속선 (수원경유)",
+            "경부고속선 (서대구경유)",
+            "경부고속선 (구포경유)"
+        )
+        1 -> listOf("등록된 노선이 없습니다")
+        2 -> listOf("대경선")
+        3 -> listOf("대구 도시철도 2호선")
+        else -> listOf("등록된 노선이 없습니다")
     }
+
+    private fun updateCategoryControls() {
+        val lines = linesForSelectedCategory()
+        val previous = lineSpinner.selectedItem?.toString()
+        lineSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, lines)
+        val index = lines.indexOf(previous).takeIf { it >= 0 } ?: 0
+        lineSpinner.setSelection(index)
+        updateRouteControls()
+    }
+
+    private fun directionsForSelectedLine(): List<String> = when (selectedLine()) {
+        "경부고속선",
+        "경부고속선 (수원경유)",
+        "경부고속선 (서대구경유)",
+        "경부고속선 (구포경유)" -> listOf("서울 방면", "부산 방면")
+        "대경선" -> listOf("경산 방면", "구미 방면")
+        "대구 도시철도 2호선" -> listOf("영남대 방면", "문양 방면")
+        else -> listOf("방향 없음")
+    }
+
+    private fun hasRegisteredRoute(): Boolean = selectedLine() != "등록된 노선이 없습니다"
 
     private fun updateRouteControls() {
         val dirs = directionsForSelectedLine()
@@ -346,35 +385,52 @@ class MainActivity : Activity() {
         directionSpinner.setSelection(if (idx >= 0) idx else 0)
         refreshStartStations()
         updateSegmentLabel()
+        updateButtons()
+    }
+
+    private fun baseStationsForSelectedLine(): List<String> = when (selectedLine()) {
+        "경부고속선" -> GYEONGBU_HSR
+        "경부고속선 (수원경유)" -> GYEONGBU_HSR_SUWON
+        "경부고속선 (서대구경유)" -> GYEONGBU_HSR_SEODAEGU
+        "경부고속선 (구포경유)" -> GYEONGBU_HSR_GUPO
+        "대경선" -> DAEGYEONG
+        "대구 도시철도 2호선" -> LINE_2
+        else -> emptyList()
     }
 
     private fun routeStations(): List<String> {
-        val base = when (lineSpinner.selectedItemPosition) {
-            0 -> DAEGYEONG
-            1 -> LINE_2
-            2 -> GYEONGBU_HSR
-            3 -> GYEONGBU_HSR_SUWON
-            4 -> GYEONGBU_HSR_SEODAEGU
-            5 -> GYEONGBU_HSR_GUPO
-            else -> DAEGYEONG
+        val base = baseStationsForSelectedLine()
+        if (base.isEmpty()) return emptyList()
+        val forward = when (selectedDirection()) {
+            "부산 방면", "경산 방면", "영남대 방면" -> true
+            "서울 방면", "구미 방면", "문양 방면" -> false
+            else -> true
         }
-        val forward = directionSpinner.selectedItemPosition == 0
         return if (forward) base else base.asReversed()
     }
 
     private fun refreshStartStations() {
         if (!::startStationSpinner.isInitialized || isRecording) return
         val stations = routeStations()
+        val values = if (stations.isEmpty()) listOf("-") else stations
         val previous = startStationSpinner.selectedItem?.toString()
-        startStationSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, stations)
-        val idx = stations.indexOf(previous)
+        startStationSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, values)
+        val idx = values.indexOf(previous)
         if (idx >= 0) startStationSpinner.setSelection(idx)
-        currentStationIndex = startStationSpinner.selectedItemPosition.coerceAtLeast(0)
+        currentStationIndex = if (stations.isEmpty()) 0 else startStationSpinner.selectedItemPosition.coerceAtLeast(0)
     }
 
     private fun updateSegmentLabel() {
         if (!::currentSegmentText.isInitialized) return
         val stations = routeStations()
+        if (stations.isEmpty()) {
+            currentStationIndex = 0
+            currentSegmentText.text = "현재 구간: 등록된 노선이 없습니다"
+            if (::arrivalButton.isInitialized) arrivalButton.text = "다음 역 도착"
+            if (::departureButton.isInitialized) departureButton.text = "현재 역 출발"
+            if (::passButton.isInitialized) passButton.text = "다음 역 통과 / 건너뛰기"
+            return
+        }
         currentStationIndex = currentStationIndex.coerceIn(0, stations.lastIndex)
         val current = stations[currentStationIndex]
         val next = stations.getOrNull(currentStationIndex + 1)
@@ -395,9 +451,10 @@ class MainActivity : Activity() {
     }
 
     private fun setRouteControlsEnabled(enabled: Boolean) {
+        categorySpinner.isEnabled = enabled
         lineSpinner.isEnabled = enabled
-        directionSpinner.isEnabled = enabled
-        startStationSpinner.isEnabled = enabled
+        directionSpinner.isEnabled = enabled && hasRegisteredRoute()
+        startStationSpinner.isEnabled = enabled && hasRegisteredRoute()
     }
 
     private fun persistSessionState() {
@@ -407,6 +464,7 @@ class MainActivity : Activity() {
             .putString(KEY_SESSION_ID, sessionId)
             .putLong(KEY_SESSION_STARTED_ELAPSED, sessionStartedElapsedMs)
             .putLong(KEY_SESSION_STARTED_WALL, sessionStartedWallMs)
+            .putString(KEY_CATEGORY, selectedCategory())
             .putString(KEY_LINE, selectedLine())
             .putString(KEY_DIRECTION, selectedDirection())
             .putString(KEY_START_STATION, startStationSpinner.selectedItem?.toString() ?: "")
@@ -424,6 +482,7 @@ class MainActivity : Activity() {
             .remove(KEY_SESSION_ID)
             .remove(KEY_SESSION_STARTED_ELAPSED)
             .remove(KEY_SESSION_STARTED_WALL)
+            .remove(KEY_CATEGORY)
             .remove(KEY_LINE)
             .remove(KEY_DIRECTION)
             .remove(KEY_START_STATION)
@@ -443,6 +502,7 @@ class MainActivity : Activity() {
         if (!prefs.getBoolean(KEY_RECORDING, false)) return
 
         val savedLine = prefs.getString(KEY_LINE, "") ?: ""
+        val savedCategory = prefs.getString(KEY_CATEGORY, "") ?: ""
         val savedDirection = prefs.getString(KEY_DIRECTION, "") ?: ""
         val savedStartStation = prefs.getString(KEY_START_STATION, "") ?: ""
         val savedFile = prefs.getString(KEY_ACTIVE_FILE, null)?.let(::File)
@@ -455,24 +515,35 @@ class MainActivity : Activity() {
 
         restoringState = true
         try {
-            val savedLineIndex = when (savedLine) {
-                "대구 도시철도 2호선" -> 1
-                "경부고속선", "경부고속선 (KTX)" -> 2
-                "경부고속선 (수원경유)" -> 3
-                "경부고속선 (서대구경유)" -> 4
-                "경부고속선 (구포경유)" -> 5
-                else -> 0
+            val inferredCategory = when {
+                savedCategory.isNotBlank() -> savedCategory
+                savedLine.startsWith("경부고속선") -> "고속열차"
+                savedLine == "대경선" -> "광역철도"
+                savedLine == "대구 도시철도 2호선" -> "도시철도"
+                else -> "고속열차"
             }
+            val categoryIndex = listOf("고속열차", "일반열차", "광역철도", "도시철도")
+                .indexOf(inferredCategory).takeIf { it >= 0 } ?: 0
+            categorySpinner.setSelection(categoryIndex, false)
+            updateCategoryControls()
+
+            val normalizedSavedLine = if (savedLine == "경부고속선 (KTX)") "경부고속선" else savedLine
+            val lines = linesForSelectedCategory()
+            val savedLineIndex = lines.indexOf(normalizedSavedLine).takeIf { it >= 0 } ?: 0
             lineSpinner.setSelection(savedLineIndex, false)
             updateRouteControls()
+
             val directionValues = directionsForSelectedLine()
             val directionIndex = directionValues.indexOf(savedDirection).takeIf { it >= 0 } ?: 0
             directionSpinner.setSelection(directionIndex, false)
             refreshStartStations()
+
             val stations = routeStations()
             val startIndex = stations.indexOf(savedStartStation).takeIf { it >= 0 } ?: 0
-            startStationSpinner.setSelection(startIndex, false)
-            currentStationIndex = prefs.getInt(KEY_CURRENT_INDEX, startIndex).coerceIn(0, stations.lastIndex)
+            if (stations.isNotEmpty()) {
+                startStationSpinner.setSelection(startIndex, false)
+                currentStationIndex = prefs.getInt(KEY_CURRENT_INDEX, startIndex).coerceIn(0, stations.lastIndex)
+            }
         } finally {
             restoringState = false
         }
@@ -587,6 +658,11 @@ class MainActivity : Activity() {
             return
         }
         val stations = routeStations()
+        if (!hasRegisteredRoute() || stations.isEmpty()) {
+            Toast.makeText(this, "선택한 구분에는 기록할 수 있는 노선이 없습니다.", Toast.LENGTH_SHORT).show()
+            updateButtons()
+            return
+        }
         currentStationIndex = startStationSpinner.selectedItemPosition.coerceIn(0, stations.lastIndex)
         sessionId = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
             .withZone(ZoneId.systemDefault())
@@ -906,6 +982,7 @@ class MainActivity : Activity() {
 
     private fun csvEscape(value: String): String = "\"${value.replace("\"", "\"\"")}\""
 
+    private fun selectedCategory(): String = categorySpinner.selectedItem?.toString() ?: ""
     private fun selectedLine(): String = lineSpinner.selectedItem?.toString() ?: ""
     private fun selectedDirection(): String = directionSpinner.selectedItem?.toString() ?: ""
     private fun currentStationName(): String = routeStations().getOrNull(currentStationIndex) ?: ""
@@ -921,13 +998,21 @@ class MainActivity : Activity() {
 
     private fun updateButtons() {
         if (!::startStopButton.isInitialized) return
+        val stations = routeStations()
+        val routeAvailable = hasRegisteredRoute() && stations.isNotEmpty()
         startStopButton.text = if (isRecording) "기록 종료" else "기록 시작"
-        departureButton.isEnabled = isRecording
-        arrivalButton.isEnabled = isRecording && currentStationIndex < routeStations().lastIndex
-        passButton.isEnabled = isRecording && currentStationIndex < routeStations().lastIndex
+        startStopButton.isEnabled = isRecording || routeAvailable
+        departureButton.isEnabled = isRecording && routeAvailable
+        arrivalButton.isEnabled = isRecording && routeAvailable && currentStationIndex < stations.lastIndex
+        passButton.isEnabled = isRecording && routeAvailable && currentStationIndex < stations.lastIndex
         exportButton.isEnabled = !isRecording && lastSavedFile?.exists() == true
+        if (!isRecording) {
+            directionSpinner.isEnabled = routeAvailable
+            startStationSpinner.isEnabled = routeAvailable
+        }
         statusText.text = when {
             isRecording -> "상태: 기록 중 · ${lastSavedFile?.name ?: ""} · ${SAMPLE_INTERVAL_MS / 1000}초 갱신 · 세션 자동복구 ON"
+            !routeAvailable -> "상태: 선택한 구분에 등록된 노선이 없습니다."
             hasRequiredPermissions() -> "상태: 준비됨"
             else -> "상태: 권한 필요"
         }
