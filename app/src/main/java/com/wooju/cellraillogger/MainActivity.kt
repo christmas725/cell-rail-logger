@@ -68,6 +68,10 @@ class MainActivity : Activity() {
             "범어", "수성구청", "만촌", "담티", "연호", "대공원", "고산", "신매", "사월",
             "정평", "임당", "영남대"
         )
+
+        private val GYEONGBU_HSR = listOf(
+            "서울", "광명", "천안아산", "오송", "대전", "김천(구미)", "동대구", "경주", "울산", "부산"
+        )
     }
 
     private lateinit var telephonyManager: TelephonyManager
@@ -84,6 +88,7 @@ class MainActivity : Activity() {
     private lateinit var startStopButton: Button
     private lateinit var departureButton: Button
     private lateinit var arrivalButton: Button
+    private lateinit var passButton: Button
     private lateinit var exportButton: Button
 
     private var isRecording = false
@@ -167,12 +172,12 @@ class MainActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "v0.1.1 · GPS 좌표를 읽지 않는 철도 셀룰러 로거"
+            text = "v0.1.2 · GPS 좌표를 읽지 않는 철도 셀룰러 로거"
             textSize = 14f
             setPadding(0, dp(4), 0, dp(18))
         })
 
-        lineSpinner = addLabeledSpinner(root, "노선", listOf("대경선", "대구 도시철도 2호선"))
+        lineSpinner = addLabeledSpinner(root, "노선", listOf("대경선", "대구 도시철도 2호선", "경부고속선 (KTX)"))
         directionSpinner = addLabeledSpinner(root, "방향", listOf("경산 방면", "구미 방면"))
         startStationSpinner = addLabeledSpinner(root, "기록 시작역", DAEGYEONG)
 
@@ -229,6 +234,12 @@ class MainActivity : Activity() {
         })
         root.addView(markerRow)
 
+        passButton = Button(this).apply {
+            text = "다음 역 통과 / 건너뛰기"
+            setOnClickListener { markPass() }
+        }
+        root.addView(passButton, fullWidthParams().apply { topMargin = dp(8) })
+
         exportButton = Button(this).apply {
             text = "마지막 CSV 내보내기"
             setOnClickListener { exportLastCsv() }
@@ -247,7 +258,7 @@ class MainActivity : Activity() {
         root.addView(eventText)
 
         root.addView(TextView(this).apply {
-            text = "※ 이 앱은 Location/GPS API를 호출하지 않습니다. Android가 셀 식별자 접근에 정밀 위치 권한을 요구하기 때문에 해당 권한만 요청합니다. v0.1.1은 분할화면 포커스 변경·화면 구성 재생성에도 진행 중 세션을 자동 복구합니다."
+            text = "※ 이 앱은 Location/GPS API를 호출하지 않습니다. Android가 셀 식별자 접근에 정밀 위치 권한을 요구하기 때문에 해당 권한만 요청합니다. v0.1.2는 대경선·대구 2호선·경부고속선(KTX)을 지원하며, 일반철도에서는 정차하지 않는 다음 역을 통과 처리할 수 있습니다. 진행 중 세션 자동복구도 유지됩니다."
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
@@ -297,19 +308,30 @@ class MainActivity : Activity() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    private fun directionsForSelectedLine(): List<String> = when (lineSpinner.selectedItemPosition) {
+        0 -> listOf("경산 방면", "구미 방면")
+        1 -> listOf("영남대 방면", "문양 방면")
+        2 -> listOf("부산 방면", "서울 방면")
+        else -> listOf("정방향", "역방향")
+    }
+
     private fun updateRouteControls() {
-        val isDaegyeong = lineSpinner.selectedItemPosition == 0
-        val dirs = if (isDaegyeong) listOf("경산 방면", "구미 방면") else listOf("영남대 방면", "문양 방면")
+        val dirs = directionsForSelectedLine()
         val currentDirection = directionSpinner.selectedItem?.toString()
         directionSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, dirs)
         val idx = dirs.indexOf(currentDirection)
-        if (idx >= 0) directionSpinner.setSelection(idx)
+        directionSpinner.setSelection(if (idx >= 0) idx else 0)
         refreshStartStations()
         updateSegmentLabel()
     }
 
     private fun routeStations(): List<String> {
-        val base = if (lineSpinner.selectedItemPosition == 0) DAEGYEONG else LINE_2
+        val base = when (lineSpinner.selectedItemPosition) {
+            0 -> DAEGYEONG
+            1 -> LINE_2
+            2 -> GYEONGBU_HSR
+            else -> DAEGYEONG
+        }
         val forward = directionSpinner.selectedItemPosition == 0
         return if (forward) base else base.asReversed()
     }
@@ -340,6 +362,9 @@ class MainActivity : Activity() {
         }
         if (::departureButton.isInitialized) {
             departureButton.text = "$current 출발"
+        }
+        if (::passButton.isInitialized) {
+            passButton.text = if (next != null) "$next 통과 / 건너뛰기" else "종착역"
         }
     }
 
@@ -404,13 +429,14 @@ class MainActivity : Activity() {
 
         restoringState = true
         try {
-            lineSpinner.setSelection(if (savedLine == "대구 도시철도 2호선") 1 else 0, false)
-            updateRouteControls()
-            val directionValues = if (lineSpinner.selectedItemPosition == 0) {
-                listOf("경산 방면", "구미 방면")
-            } else {
-                listOf("영남대 방면", "문양 방면")
+            val savedLineIndex = when (savedLine) {
+                "대구 도시철도 2호선" -> 1
+                "경부고속선 (KTX)" -> 2
+                else -> 0
             }
+            lineSpinner.setSelection(savedLineIndex, false)
+            updateRouteControls()
+            val directionValues = directionsForSelectedLine()
             val directionIndex = directionValues.indexOf(savedDirection).takeIf { it >= 0 } ?: 0
             directionSpinner.setSelection(directionIndex, false)
             refreshStartStations()
@@ -602,6 +628,20 @@ class MainActivity : Activity() {
         currentStationIndex = nextIndex
         persistSessionState()
         updateSegmentLabel()
+    }
+
+    private fun markPass() {
+        if (!isRecording) return
+        val stations = routeStations()
+        val nextIndex = currentStationIndex + 1
+        if (nextIndex > stations.lastIndex) return
+        val next = stations[nextIndex]
+        writeMarker("PASS", next)
+        addEvent("$next 통과 / 건너뛰기")
+        currentStationIndex = nextIndex
+        persistSessionState()
+        updateSegmentLabel()
+        updateButtons()
     }
 
     private fun handleCellSnapshot(cells: List<CellInfo>, source: String) {
@@ -855,6 +895,7 @@ class MainActivity : Activity() {
         startStopButton.text = if (isRecording) "기록 종료" else "기록 시작"
         departureButton.isEnabled = isRecording
         arrivalButton.isEnabled = isRecording && currentStationIndex < routeStations().lastIndex
+        passButton.isEnabled = isRecording && currentStationIndex < routeStations().lastIndex
         exportButton.isEnabled = !isRecording && lastSavedFile?.exists() == true
         statusText.text = when {
             isRecording -> "상태: 기록 중 · ${lastSavedFile?.name ?: ""} · ${SAMPLE_INTERVAL_MS / 1000}초 갱신 · 세션 자동복구 ON"
