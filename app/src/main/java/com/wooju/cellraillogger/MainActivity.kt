@@ -6,6 +6,8 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.location.Location
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -59,6 +61,12 @@ class MainActivity : Activity() {
         private const val KEY_ACTIVE_FILE = "active_file"
         private const val KEY_LAST_FILE = "last_file"
 
+        // Process-memory only: never persisted to preferences or CSV.
+        private var startupLocationRequestedThisProcess = false
+        private var startupLatitudeThisProcess: Double? = null
+        private var startupLongitudeThisProcess: Double? = null
+        private var startupLocationToastShownThisProcess = false
+
         private val DAEGYEONG = listOf(
             "구미", "사곡", "북삼", "왜관", "서대구", "대구", "동대구", "경산"
         )
@@ -84,6 +92,65 @@ class MainActivity : Activity() {
 
         private val GYEONGBU_HSR_GUPO = listOf(
             "서울", "광명", "천안아산", "대전", "김천(구미)", "동대구", "경산", "밀양", "물금", "구포", "부산"
+        )
+
+        private data class StationPoint(val latitude: Double, val longitude: Double)
+
+        private val STATION_COORDS = mapOf(
+            // High-speed / conventional railway stations
+            "서울" to StationPoint(37.55473, 126.97060),
+            "영등포" to StationPoint(37.51522, 126.90770),
+            "광명" to StationPoint(37.41649, 126.88413),
+            "수원" to StationPoint(37.26661, 126.99927),
+            "천안아산" to StationPoint(36.79420, 127.10461),
+            "오송" to StationPoint(36.61958, 127.32812),
+            "대전" to StationPoint(36.33216, 127.43415),
+            "김천(구미)" to StationPoint(36.11300, 128.18060),
+            "구미" to StationPoint(36.12831, 128.33075),
+            "사곡" to StationPoint(36.09837, 128.35643),
+            "북삼" to StationPoint(36.05611, 128.34528),
+            "왜관" to StationPoint(35.99311, 128.40059),
+            "서대구" to StationPoint(35.88136, 128.54208),
+            "대구" to StationPoint(35.87575, 128.59550),
+            "동대구" to StationPoint(35.87908, 128.62859),
+            "경산" to StationPoint(35.81993, 128.72737),
+            "경주" to StationPoint(35.79841, 129.13937),
+            "울산" to StationPoint(35.55069, 129.13828),
+            "밀양" to StationPoint(35.47498, 128.77144),
+            "물금" to StationPoint(35.30684, 128.98514),
+            "구포" to StationPoint(35.20511, 128.99751),
+            "부산" to StationPoint(35.11516, 129.04156),
+
+            // Daegu Metro Line 2
+            "문양" to StationPoint(35.86398, 128.43726),
+            "다사" to StationPoint(35.86495, 128.45828),
+            "대실" to StationPoint(35.85733, 128.46559),
+            "강창" to StationPoint(35.85307, 128.47853),
+            "계명대" to StationPoint(35.85149, 128.49202),
+            "성서산업단지" to StationPoint(35.85173, 128.50706),
+            "이곡" to StationPoint(35.85062, 128.51580),
+            "용산" to StationPoint(35.84901, 128.52872),
+            "죽전" to StationPoint(35.85071, 128.53880),
+            "감삼" to StationPoint(35.85428, 128.54810),
+            "두류" to StationPoint(35.85723, 128.55562),
+            "내당" to StationPoint(35.86011, 128.56464),
+            "반고개" to StationPoint(35.86224, 128.57272),
+            "청라언덕" to StationPoint(35.86482, 128.58237),
+            "반월당" to StationPoint(35.86545, 128.59341),
+            "경대병원" to StationPoint(35.86320, 128.60270),
+            "대구은행" to StationPoint(35.85974, 128.61412),
+            "범어" to StationPoint(35.85906, 128.62620),
+            "수성구청" to StationPoint(35.85880, 128.63559),
+            "만촌" to StationPoint(35.85884, 128.64491),
+            "담티" to StationPoint(35.85480, 128.65396),
+            "연호" to StationPoint(35.84655, 128.67170),
+            "대공원" to StationPoint(35.84261, 128.67986),
+            "고산" to StationPoint(35.84292, 128.69327),
+            "신매" to StationPoint(35.84081, 128.70497),
+            "사월" to StationPoint(35.83695, 128.71544),
+            "정평" to StationPoint(35.83405, 128.72855),
+            "임당" to StationPoint(35.83406, 128.74103),
+            "영남대" to StationPoint(35.83635, 128.75313)
         )
     }
 
@@ -186,7 +253,7 @@ class MainActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "v0.1.4 · GPS 좌표를 읽지 않는 철도 셀룰러 로거"
+            text = "v0.1.5 · 시작 시 위치 1회 사용 · 철도 셀룰러 로거"
             textSize = 14f
             setPadding(0, dp(4), 0, dp(18))
         })
@@ -227,6 +294,7 @@ class MainActivity : Activity() {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 if (!restoringState) {
                     refreshStartStations()
+                    applyNearestStationForCurrentRoute()
                     updateSegmentLabel()
                 }
             }
@@ -293,7 +361,7 @@ class MainActivity : Activity() {
         root.addView(eventText)
 
         root.addView(TextView(this).apply {
-            text = "※ 이 앱은 Location/GPS API를 호출하지 않습니다. Android가 셀 식별자 접근에 정밀 위치 권한을 요구하기 때문에 해당 권한만 요청합니다. v0.1.4는 구분 → 노선 → 방향 → 시작역 순으로 선택합니다. 고속열차·광역철도·도시철도를 지원하며 일반열차는 노선 등록 준비 중입니다. 진행 중 세션 자동복구와 통과 마커도 유지됩니다."
+            text = "※ v0.1.5부터 앱 실행 시 현재 위치를 1회만 읽어 선택한 노선의 가장 가까운 기록 시작역을 자동 선택합니다. 이 위치 좌표는 메모리에만 두며 CSV·설정·파일에는 저장하지 않습니다. 이후 노선을 바꾸면 처음 읽은 위치를 재사용해 가까운 역을 다시 선택합니다. 셀 기록, 세션 자동복구, 통과 마커는 그대로 유지됩니다."
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
@@ -384,6 +452,7 @@ class MainActivity : Activity() {
         val idx = dirs.indexOf(currentDirection)
         directionSpinner.setSelection(if (idx >= 0) idx else 0)
         refreshStartStations()
+        applyNearestStationForCurrentRoute()
         updateSegmentLabel()
         updateButtons()
     }
@@ -577,10 +646,111 @@ class MainActivity : Activity() {
         return (System.currentTimeMillis() - sessionStartedWallMs).coerceAtLeast(0L)
     }
 
+
+    private fun requestStartupLocationOnce() {
+        if (startupLocationRequestedThisProcess || isRecording || !hasRequiredPermissions()) return
+        startupLocationRequestedThisProcess = true
+
+        val locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        val providers = buildList {
+            if (runCatching { locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) }.getOrDefault(false)) {
+                add(LocationManager.NETWORK_PROVIDER)
+            }
+            if (runCatching { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) }.getOrDefault(false)) {
+                add(LocationManager.GPS_PROVIDER)
+            }
+        }
+
+        if (providers.isEmpty()) {
+            addEvent("가까운 역 자동 선택 실패 · 위치 서비스가 꺼져 있음")
+            return
+        }
+
+        requestStartupLocationFromProvider(locationManager, providers, 0)
+    }
+
+    private fun requestStartupLocationFromProvider(
+        locationManager: LocationManager,
+        providers: List<String>,
+        index: Int
+    ) {
+        if (index >= providers.size) {
+            addEvent("가까운 역 자동 선택 실패 · 현재 위치를 얻지 못함")
+            return
+        }
+
+        try {
+            locationManager.getCurrentLocation(providers[index], null, mainExecutor) { location ->
+                if (location != null) {
+                    startupLatitudeThisProcess = location.latitude
+                    startupLongitudeThisProcess = location.longitude
+                    applyNearestStationForCurrentRoute(showToast = true)
+                } else {
+                    requestStartupLocationFromProvider(locationManager, providers, index + 1)
+                }
+            }
+        } catch (_: SecurityException) {
+            requestStartupLocationFromProvider(locationManager, providers, index + 1)
+        } catch (_: Exception) {
+            requestStartupLocationFromProvider(locationManager, providers, index + 1)
+        }
+    }
+
+    private fun applyNearestStationForCurrentRoute(showToast: Boolean = false) {
+        if (isRecording || !::startStationSpinner.isInitialized) return
+
+        val latitude = startupLatitudeThisProcess ?: return
+        val longitude = startupLongitudeThisProcess ?: return
+        val stations = routeStations()
+        if (stations.isEmpty()) return
+
+        var nearestName: String? = null
+        var nearestDistance = Float.MAX_VALUE
+        val result = FloatArray(1)
+
+        stations.distinct().forEach { station ->
+            val point = STATION_COORDS[station] ?: return@forEach
+            Location.distanceBetween(
+                latitude,
+                longitude,
+                point.latitude,
+                point.longitude,
+                result
+            )
+            if (result[0] < nearestDistance) {
+                nearestDistance = result[0]
+                nearestName = station
+            }
+        }
+
+        val nearest = nearestName ?: return
+        val index = stations.indexOf(nearest)
+        if (index < 0) return
+
+        startStationSpinner.setSelection(index, false)
+        currentStationIndex = index
+        updateSegmentLabel()
+
+        if (showToast && !startupLocationToastShownThisProcess) {
+            startupLocationToastShownThisProcess = true
+            val distanceText = if (nearestDistance < 1000f) {
+                "${nearestDistance.toInt()}m"
+            } else {
+                String.format(Locale.KOREA, "%.1fkm", nearestDistance / 1000f)
+            }
+            Toast.makeText(
+                this,
+                "현재 위치 기준 가까운 역: $nearest · $distanceText",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
     private fun requestPermissionsIfNeeded() {
         if (hasRequiredPermissions()) {
             registerTelephonyCallbackIfNeeded()
             requestFreshCellInfo()
+            requestStartupLocationOnce()
             if (isRecording) updateButtons() else statusText.text = "상태: 준비됨"
             return
         }
@@ -605,10 +775,11 @@ class MainActivity : Activity() {
             if (hasRequiredPermissions()) {
                 registerTelephonyCallbackIfNeeded()
                 requestFreshCellInfo()
+                requestStartupLocationOnce()
                 if (isRecording) updateButtons() else statusText.text = "상태: 준비됨"
             } else {
-                statusText.text = "상태: 정밀 위치 + 전화 권한이 필요합니다. GPS 좌표는 사용하지 않습니다."
-                Toast.makeText(this, "셀 식별자를 읽으려면 정밀 위치 및 전화 권한이 필요합니다.", Toast.LENGTH_LONG).show()
+                statusText.text = "상태: 정밀 위치 + 전화 권한이 필요합니다."
+                Toast.makeText(this, "셀 정보 기록과 시작역 자동 선택을 위해 정밀 위치 및 전화 권한이 필요합니다.", Toast.LENGTH_LONG).show()
             }
         }
     }
