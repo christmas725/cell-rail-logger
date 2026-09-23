@@ -95,6 +95,20 @@ class MainActivity : Activity() {
         )
 
         private data class StationPoint(val latitude: Double, val longitude: Double)
+        private data class RouteChoice(
+            val categoryIndex: Int,
+            val lineName: String,
+            val stations: List<String>
+        )
+
+        private val ROUTE_CHOICES = listOf(
+            RouteChoice(0, "경부고속선", GYEONGBU_HSR),
+            RouteChoice(0, "경부고속선 (수원경유)", GYEONGBU_HSR_SUWON),
+            RouteChoice(0, "경부고속선 (서대구경유)", GYEONGBU_HSR_SEODAEGU),
+            RouteChoice(0, "경부고속선 (구포경유)", GYEONGBU_HSR_GUPO),
+            RouteChoice(2, "대경선", DAEGYEONG),
+            RouteChoice(3, "대구 도시철도 2호선", LINE_2)
+        )
 
         private val STATION_COORDS = mapOf(
             // High-speed / conventional railway stations
@@ -107,7 +121,7 @@ class MainActivity : Activity() {
             "대전" to StationPoint(36.33216, 127.43415),
             "김천(구미)" to StationPoint(36.11300, 128.18060),
             "구미" to StationPoint(36.12831, 128.33075),
-            "사곡" to StationPoint(36.09837, 128.35643),
+            "사곡" to StationPoint(36.09812, 128.35642),
             "북삼" to StationPoint(36.05611, 128.34528),
             "왜관" to StationPoint(35.99311, 128.40059),
             "서대구" to StationPoint(35.88136, 128.54208),
@@ -253,7 +267,7 @@ class MainActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "v0.1.5 · 시작 시 위치 1회 사용 · 철도 셀룰러 로거"
+            text = "v0.1.6 · 전체 노선 기준 가까운 역 자동 선택"
             textSize = 14f
             setPadding(0, dp(4), 0, dp(18))
         })
@@ -361,7 +375,7 @@ class MainActivity : Activity() {
         root.addView(eventText)
 
         root.addView(TextView(this).apply {
-            text = "※ v0.1.5부터 앱 실행 시 현재 위치를 1회만 읽어 선택한 노선의 가장 가까운 기록 시작역을 자동 선택합니다. 이 위치 좌표는 메모리에만 두며 CSV·설정·파일에는 저장하지 않습니다. 이후 노선을 바꾸면 처음 읽은 위치를 재사용해 가까운 역을 다시 선택합니다. 셀 기록, 세션 자동복구, 통과 마커는 그대로 유지됩니다."
+            text = "※ v0.1.6은 앱 실행 시 현재 위치를 1회만 읽고 등록된 모든 노선의 역을 비교해 가장 가까운 역이 속한 구분·노선을 자동으로 메인 선택합니다. 위치 좌표는 메모리에만 두며 CSV·설정·파일에는 저장하지 않습니다. 이후 노선을 직접 바꾸면 처음 읽은 위치를 재사용해 해당 노선의 가까운 시작역을 맞춥니다. 셀 기록, 세션 자동복구, 통과 마커는 그대로 유지됩니다."
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
@@ -684,7 +698,7 @@ class MainActivity : Activity() {
                 if (location != null) {
                     startupLatitudeThisProcess = location.latitude
                     startupLongitudeThisProcess = location.longitude
-                    applyNearestStationForCurrentRoute(showToast = true)
+                    applyNearestRouteAtStartup()
                 } else {
                     requestStartupLocationFromProvider(locationManager, providers, index + 1)
                 }
@@ -694,6 +708,83 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
             requestStartupLocationFromProvider(locationManager, providers, index + 1)
         }
+    }
+
+
+    private fun applyNearestRouteAtStartup() {
+        if (isRecording || !::startStationSpinner.isInitialized) return
+
+        val latitude = startupLatitudeThisProcess ?: return
+        val longitude = startupLongitudeThisProcess ?: return
+        val result = FloatArray(1)
+
+        var bestRoute: RouteChoice? = null
+        var bestStation: String? = null
+        var bestDistance = Float.MAX_VALUE
+
+        // ROUTE_CHOICES order is also the deterministic tie-break priority.
+        ROUTE_CHOICES.forEach { route ->
+            route.stations.distinct().forEach { station ->
+                val point = STATION_COORDS[station] ?: return@forEach
+                Location.distanceBetween(
+                    latitude,
+                    longitude,
+                    point.latitude,
+                    point.longitude,
+                    result
+                )
+                if (result[0] < bestDistance) {
+                    bestDistance = result[0]
+                    bestRoute = route
+                    bestStation = station
+                }
+            }
+        }
+
+        val route = bestRoute ?: return
+        val station = bestStation ?: return
+
+        restoringState = true
+        try {
+            categorySpinner.setSelection(route.categoryIndex, false)
+            updateCategoryControls()
+
+            val availableLines = linesForSelectedCategory()
+            val lineIndex = availableLines.indexOf(route.lineName).takeIf { it >= 0 } ?: 0
+            lineSpinner.setSelection(lineIndex, false)
+            updateRouteControls()
+
+            // Direction itself cannot be inferred reliably from one point.
+            // Keep each line's first displayed direction as the initial direction.
+            directionSpinner.setSelection(0, false)
+            refreshStartStations()
+
+            val stations = routeStations()
+            val stationIndex = stations.indexOf(station).takeIf { it >= 0 }
+                ?: stations.indexOf(station).takeIf { it >= 0 }
+                ?: 0
+            startStationSpinner.setSelection(stationIndex, false)
+            currentStationIndex = stationIndex
+            updateSegmentLabel()
+            updateButtons()
+        } finally {
+            restoringState = false
+        }
+
+        if (!startupLocationToastShownThisProcess) {
+            startupLocationToastShownThisProcess = true
+            val distanceText = if (bestDistance < 1000f) {
+                "${bestDistance.toInt()}m"
+            } else {
+                String.format(Locale.KOREA, "%.1fkm", bestDistance / 1000f)
+            }
+            Toast.makeText(
+                this,
+                "가장 가까운 등록 역: $station · ${route.lineName} · $distanceText",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+        addEvent("전체 노선 기준 가까운 역 자동 선택 · ${route.lineName} · $station")
     }
 
     private fun applyNearestStationForCurrentRoute(showToast: Boolean = false) {
