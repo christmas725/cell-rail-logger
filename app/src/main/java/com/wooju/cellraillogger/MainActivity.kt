@@ -72,6 +72,18 @@ class MainActivity : Activity() {
         private val GYEONGBU_HSR = listOf(
             "서울", "광명", "천안아산", "오송", "대전", "김천(구미)", "동대구", "경주", "울산", "부산"
         )
+
+        private val GYEONGBU_HSR_SUWON = listOf(
+            "서울", "영등포", "수원", "대전", "김천(구미)", "동대구", "경주", "울산", "부산"
+        )
+
+        private val GYEONGBU_HSR_SEODAEGU = listOf(
+            "서울", "광명", "천안아산", "대전", "김천(구미)", "서대구", "동대구", "경주", "울산", "부산"
+        )
+
+        private val GYEONGBU_HSR_GUPO = listOf(
+            "서울", "광명", "천안아산", "대전", "김천(구미)", "동대구", "경산", "밀양", "물금", "구포", "부산"
+        )
     }
 
     private lateinit var telephonyManager: TelephonyManager
@@ -172,12 +184,23 @@ class MainActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "v0.1.2 · GPS 좌표를 읽지 않는 철도 셀룰러 로거"
+            text = "v0.1.3 · GPS 좌표를 읽지 않는 철도 셀룰러 로거"
             textSize = 14f
             setPadding(0, dp(4), 0, dp(18))
         })
 
-        lineSpinner = addLabeledSpinner(root, "노선", listOf("대경선", "대구 도시철도 2호선", "경부고속선 (KTX)"))
+        lineSpinner = addLabeledSpinner(
+            root,
+            "노선",
+            listOf(
+                "대경선",
+                "대구 도시철도 2호선",
+                "경부고속선",
+                "경부고속선 (수원경유)",
+                "경부고속선 (서대구경유)",
+                "경부고속선 (구포경유)"
+            )
+        )
         directionSpinner = addLabeledSpinner(root, "방향", listOf("경산 방면", "구미 방면"))
         startStationSpinner = addLabeledSpinner(root, "기록 시작역", DAEGYEONG)
 
@@ -258,7 +281,7 @@ class MainActivity : Activity() {
         root.addView(eventText)
 
         root.addView(TextView(this).apply {
-            text = "※ 이 앱은 Location/GPS API를 호출하지 않습니다. Android가 셀 식별자 접근에 정밀 위치 권한을 요구하기 때문에 해당 권한만 요청합니다. v0.1.2는 대경선·대구 2호선·경부고속선(KTX)을 지원하며, 일반철도에서는 정차하지 않는 다음 역을 통과 처리할 수 있습니다. 진행 중 세션 자동복구도 유지됩니다."
+            text = "※ 이 앱은 Location/GPS API를 호출하지 않습니다. Android가 셀 식별자 접근에 정밀 위치 권한을 요구하기 때문에 해당 권한만 요청합니다. v0.1.3은 대경선·대구 2호선과 경부고속선 4개 운행 패턴(본선·수원·서대구·구포 경유)을 지원합니다. 일반철도에서는 정차하지 않는 다음 역을 통과 처리할 수 있고 진행 중 세션 자동복구도 유지됩니다."
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
@@ -311,7 +334,7 @@ class MainActivity : Activity() {
     private fun directionsForSelectedLine(): List<String> = when (lineSpinner.selectedItemPosition) {
         0 -> listOf("경산 방면", "구미 방면")
         1 -> listOf("영남대 방면", "문양 방면")
-        2 -> listOf("부산 방면", "서울 방면")
+        in 2..5 -> listOf("부산 방면", "서울 방면")
         else -> listOf("정방향", "역방향")
     }
 
@@ -330,6 +353,9 @@ class MainActivity : Activity() {
             0 -> DAEGYEONG
             1 -> LINE_2
             2 -> GYEONGBU_HSR
+            3 -> GYEONGBU_HSR_SUWON
+            4 -> GYEONGBU_HSR_SEODAEGU
+            5 -> GYEONGBU_HSR_GUPO
             else -> DAEGYEONG
         }
         val forward = directionSpinner.selectedItemPosition == 0
@@ -431,7 +457,10 @@ class MainActivity : Activity() {
         try {
             val savedLineIndex = when (savedLine) {
                 "대구 도시철도 2호선" -> 1
-                "경부고속선 (KTX)" -> 2
+                "경부고속선", "경부고속선 (KTX)" -> 2
+                "경부고속선 (수원경유)" -> 3
+                "경부고속선 (서대구경유)" -> 4
+                "경부고속선 (구포경유)" -> 5
                 else -> 0
             }
             lineSpinner.setSelection(savedLineIndex, false)
