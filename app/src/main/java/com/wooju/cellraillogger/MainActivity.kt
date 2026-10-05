@@ -110,6 +110,40 @@ class MainActivity : Activity() {
             RouteChoice(3, "대구 도시철도 2호선", LINE_2)
         )
 
+        private data class Line2Anchor(
+            val tac: Int,
+            val pci: Int,
+            val enb: Int
+        )
+
+        // Learned from five field logs collected on 2026-09-11, 09-15, 09-19 and 10-05.
+        // EARFCN is intentionally excluded because the same physical anchor appeared on
+        // multiple LTE bands while TAC + eNB + PCI stayed stable.
+        private val LINE2_ANCHORS = listOf(
+            Line2Anchor(1026, 14, 82056),
+            Line2Anchor(1026, 15, 82056),
+            Line2Anchor(1041, 359, 82057),
+            Line2Anchor(1041, 27, 77862),
+            Line2Anchor(1030, 9, 77862),
+            Line2Anchor(1030, 10, 77862),
+            Line2Anchor(1030, 167, 77863),
+            Line2Anchor(1030, 72, 77863),
+            Line2Anchor(1032, 436, 77863),
+            Line2Anchor(1032, 327, 78033)
+        )
+
+        private val LINE2_FORWARD_SEGMENTS = listOf(
+            "성서산업단지" to "이곡",
+            "이곡" to "용산",
+            "용산" to "죽전",
+            "죽전" to "감삼",
+            "감삼" to "두류",
+            "두류" to "내당",
+            "내당" to "반고개",
+            "반고개" to "청라언덕",
+            "청라언덕" to "반월당"
+        )
+
         private val STATION_COORDS = mapOf(
             // High-speed / conventional railway stations
             "서울" to StationPoint(37.55473, 126.97060),
@@ -177,6 +211,7 @@ class MainActivity : Activity() {
     private lateinit var directionSpinner: Spinner
     private lateinit var startStationSpinner: Spinner
     private lateinit var currentSegmentText: TextView
+    private lateinit var autoDetectText: TextView
     private lateinit var statusText: TextView
     private lateinit var cellText: TextView
     private lateinit var eventText: TextView
@@ -197,6 +232,18 @@ class MainActivity : Activity() {
     private val eventLines = ArrayDeque<String>()
     private var lastCellSnapshot = "아직 셀 정보가 없습니다."
     private var restoringState = false
+
+    private var matcherContextLine = ""
+    private var pendingAnchorIndex: Int? = null
+    private var pendingAnchorExact = false
+    private var pendingAnchorCount = 0
+    private var lastCommittedAnchorIndex: Int? = null
+    private var lastCommittedAnchorExact = false
+    private val recentAnchorIndices = ArrayDeque<Int>()
+    private var autoDetectedDirection = "판별 대기"
+    private var autoDetectedSegment = "셀 전환 대기"
+    private var autoConfidence = 0
+    private var autoLastSignature = "-"
 
     private val localFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
         .withLocale(Locale.KOREA)
@@ -267,7 +314,7 @@ class MainActivity : Activity() {
             setTypeface(typeface, Typeface.BOLD)
         })
         root.addView(TextView(this).apply {
-            text = "v0.1.6 · 전체 노선 기준 가까운 역 자동 선택"
+            text = "v0.2.0 · 셀 전환 기반 구간/방향 자동 판별"
             textSize = 14f
             setPadding(0, dp(4), 0, dp(18))
         })
@@ -327,6 +374,13 @@ class MainActivity : Activity() {
         currentSegmentText = sectionText("현재 구간: -")
         root.addView(currentSegmentText)
 
+        root.addView(headerText("자동 판별"))
+        autoDetectText = bodyBox(
+            "대구 도시철도 2호선 학습 범위: 성서산업단지 ↔ 반월당\n" +
+                "등록 셀 전환을 기다리는 중입니다."
+        )
+        root.addView(autoDetectText)
+
         startStopButton = Button(this).apply {
             text = "기록 시작"
             setOnClickListener { if (isRecording) stopRecording() else startRecording() }
@@ -375,7 +429,7 @@ class MainActivity : Activity() {
         root.addView(eventText)
 
         root.addView(TextView(this).apply {
-            text = "※ v0.1.6은 앱 실행 시 현재 위치를 1회만 읽고 등록된 모든 노선의 역을 비교해 가장 가까운 역이 속한 구분·노선을 자동으로 메인 선택합니다. 위치 좌표는 메모리에만 두며 CSV·설정·파일에는 저장하지 않습니다. 이후 노선을 직접 바꾸면 처음 읽은 위치를 재사용해 해당 노선의 가까운 시작역을 맞춥니다. 셀 기록, 세션 자동복구, 통과 마커는 그대로 유지됩니다."
+            text = "※ v0.2.0은 기존 셀 로그 수집을 계속하면서 대구 도시철도 2호선 성서산업단지↔반월당의 학습된 LTE TAC+eNB+PCI 전환으로 방향과 자동 확정 구간을 판별합니다. 단일 셀만으로는 역 전후 구간이 겹칠 수 있어 구간은 안정된 전환이 확인될 때 확정합니다. 다른 구간·노선은 계속 학습 데이터로 저장합니다. 시작 시 위치 1회 자동 선택과 세션 복구도 유지됩니다."
             textSize = 12f
             setPadding(0, dp(18), 0, 0)
         })
@@ -467,8 +521,10 @@ class MainActivity : Activity() {
         directionSpinner.setSelection(if (idx >= 0) idx else 0)
         refreshStartStations()
         applyNearestStationForCurrentRoute()
+        ensureMatcherContext()
         updateSegmentLabel()
         updateButtons()
+        refreshAutoDetectUi()
     }
 
     private fun baseStationsForSelectedLine(): List<String> = when (selectedLine()) {
@@ -660,6 +716,191 @@ class MainActivity : Activity() {
         return (System.currentTimeMillis() - sessionStartedWallMs).coerceAtLeast(0L)
     }
 
+
+
+    private fun ensureMatcherContext() {
+        val line = selectedLine()
+        if (matcherContextLine == line) return
+
+        matcherContextLine = line
+        pendingAnchorIndex = null
+        pendingAnchorExact = false
+        pendingAnchorCount = 0
+        lastCommittedAnchorIndex = null
+        lastCommittedAnchorExact = false
+        recentAnchorIndices.clear()
+        autoDetectedDirection = "판별 대기"
+        autoConfidence = 0
+        autoLastSignature = "-"
+        autoDetectedSegment = if (line == "대구 도시철도 2호선") {
+            "셀 전환 대기"
+        } else {
+            "학습 데이터 부족 · 셀 로그 수집 중"
+        }
+    }
+
+    private fun refreshAutoDetectUi() {
+        if (!::autoDetectText.isInitialized) return
+
+        if (selectedLine() != "대구 도시철도 2호선") {
+            autoDetectText.text = buildString {
+                append("노선: ").append(selectedLine()).append('\n')
+                append("자동 판별: 학습 데이터 부족\n")
+                append("상태: 기존 셀 로그는 계속 저장됩니다.")
+            }
+            return
+        }
+
+        val recent = if (recentAnchorIndices.isEmpty()) {
+            "-"
+        } else {
+            recentAnchorIndices.joinToString(" → ") { LINE2_ANCHORS[it].pci.toString() }
+        }
+
+        autoDetectText.text = buildString {
+            append("학습 범위: 성서산업단지 ↔ 반월당\n")
+            append("자동 방향: ").append(autoDetectedDirection).append('\n')
+            append("자동 확정 구간: ").append(autoDetectedSegment).append('\n')
+            append("신뢰도: ").append(autoConfidence).append("%\n")
+            append("현재 앵커: ").append(autoLastSignature).append('\n')
+            append("최근 PCI: ").append(recent)
+        }
+    }
+
+    private fun matchLine2Anchor(cell: CellInfoLte): Pair<Int, Boolean>? {
+        val id = cell.cellIdentity as CellIdentityLte
+        val ci = id.ci
+        val tac = id.tac
+        val pci = id.pci
+        if (ci == CellInfo.UNAVAILABLE || tac == CellInfo.UNAVAILABLE || pci == CellInfo.UNAVAILABLE) {
+            return null
+        }
+
+        val enb = ci / 256
+        val exactIndex = LINE2_ANCHORS.indexOfFirst {
+            it.tac == tac && it.pci == pci && it.enb == enb
+        }
+        if (exactIndex >= 0) return exactIndex to true
+
+        // Cell IDs can vary by sector/band. TAC + PCI is a conservative fallback.
+        val fallbackIndex = LINE2_ANCHORS.indexOfFirst {
+            it.tac == tac && it.pci == pci
+        }
+        return if (fallbackIndex >= 0) fallbackIndex to false else null
+    }
+
+    private fun processAutoDetection(cells: List<CellInfo>) {
+        ensureMatcherContext()
+
+        if (selectedLine() != "대구 도시철도 2호선") {
+            refreshAutoDetectUi()
+            return
+        }
+
+        val serving = cells.filterIsInstance<CellInfoLte>().firstOrNull { it.isRegistered }
+        if (serving == null) {
+            autoLastSignature = "등록 LTE 셀 대기"
+            refreshAutoDetectUi()
+            return
+        }
+
+        val id = serving.cellIdentity as CellIdentityLte
+        val ci = id.ci
+        val enbText = if (ci == CellInfo.UNAVAILABLE) "-" else (ci / 256).toString()
+        autoLastSignature = "TAC ${normalizeInt(id.tac)} / PCI ${normalizeInt(id.pci)} / eNB $enbText"
+
+        val match = matchLine2Anchor(serving)
+        if (match == null) {
+            pendingAnchorIndex = null
+            pendingAnchorCount = 0
+            autoDetectedSegment = if (lastCommittedAnchorIndex == null) {
+                "미학습 셀 · 로그 수집 중"
+            } else {
+                autoDetectedSegment
+            }
+            autoConfidence = if (lastCommittedAnchorIndex == null) 20 else minOf(autoConfidence, 70)
+            refreshAutoDetectUi()
+            return
+        }
+
+        val (anchorIndex, exact) = match
+        if (pendingAnchorIndex == anchorIndex) {
+            pendingAnchorCount += 1
+            pendingAnchorExact = pendingAnchorExact && exact
+        } else {
+            pendingAnchorIndex = anchorIndex
+            pendingAnchorCount = 1
+            pendingAnchorExact = exact
+        }
+
+        // Debounce: require two consecutive serving-cell observations.
+        if (pendingAnchorCount < 2 || lastCommittedAnchorIndex == anchorIndex) {
+            if (lastCommittedAnchorIndex == null) {
+                autoDetectedSegment = "앵커 안정화 중"
+                autoConfidence = if (exact) 55 else 45
+            }
+            refreshAutoDetectUi()
+            return
+        }
+
+        val previousIndex = lastCommittedAnchorIndex
+        val previousExact = lastCommittedAnchorExact
+        lastCommittedAnchorIndex = anchorIndex
+        lastCommittedAnchorExact = pendingAnchorExact
+
+        recentAnchorIndices.addLast(anchorIndex)
+        while (recentAnchorIndices.size > 5) recentAnchorIndices.removeFirst()
+
+        if (previousIndex == null) {
+            autoDetectedSegment = "앵커 확인 · 다음 전환 대기"
+            autoConfidence = if (pendingAnchorExact) 68 else 60
+            refreshAutoDetectUi()
+            return
+        }
+
+        val delta = anchorIndex - previousIndex
+        if (kotlin.math.abs(delta) == 1) {
+            val segmentIndex = minOf(previousIndex, anchorIndex)
+            val (forwardFrom, forwardTo) = LINE2_FORWARD_SEGMENTS[segmentIndex]
+            val forward = delta > 0
+            autoDetectedDirection = if (forward) "영남대 방면" else "문양 방면"
+            autoDetectedSegment = if (forward) {
+                "$forwardFrom → $forwardTo"
+            } else {
+                "$forwardTo → $forwardFrom"
+            }
+            autoConfidence = if (previousExact && pendingAnchorExact) 98 else 92
+
+            if (isRecording) {
+                writeAutoMatchMarker()
+            }
+        } else if (delta != 0) {
+            autoDetectedDirection = if (delta > 0) "영남대 방면" else "문양 방면"
+            autoDetectedSegment = "중간 앵커 누락 · 추가 관측 중"
+            autoConfidence = 70
+        }
+
+        refreshAutoDetectUi()
+    }
+
+    private fun writeAutoMatchMarker() {
+        writeCsvRow(
+            event = "AUTO_MATCH:$autoDetectedDirection:$autoDetectedSegment:$autoConfidence",
+            source = "matcher-v0.2.0",
+            rat = "",
+            registered = "",
+            cellId = "",
+            tacLac = "",
+            pciPsc = "",
+            channel = "",
+            rsrp = "",
+            rsrq = "",
+            sinr = "",
+            dbm = "",
+            mcc = "",
+            mnc = ""
+        )
+    }
 
     private fun requestStartupLocationOnce() {
         if (startupLocationRequestedThisProcess || isRecording || !hasRequiredPermissions()) return
@@ -945,6 +1186,8 @@ class MainActivity : Activity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         updateSegmentLabel()
         addEvent("기록 시작 · ${selectedLine()} · ${selectedDirection()}")
+        ensureMatcherContext()
+        refreshAutoDetectUi()
         writeMarker("SESSION_START", stations[currentStationIndex])
         persistSessionState()
         handler.removeCallbacks(sampleRunnable)
@@ -1047,6 +1290,7 @@ class MainActivity : Activity() {
         if (isRecording) {
             sorted.forEach { cell -> writeCellRow(cell, source) }
         }
+        processAutoDetection(sorted)
     }
 
     private fun signalDbm(cell: CellInfo): Int = when (cell) {
